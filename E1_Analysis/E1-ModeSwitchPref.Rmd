@@ -1,0 +1,187 @@
+---
+title: "ModeViewPref"
+output: 
+   html_document: 
+     dev: png
+     fig_height: 6
+     fig_width: 6.5
+     number_sections: yes
+     toc: yes
+     toc_depth: 4
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(tools)
+library(ggplot2)
+library(ARTool)
+library(reshape2)
+library(ez)
+library(apa)
+library(gridExtra)
+library(phia)
+library(viridis)
+library(lsmeans)
+library(gmodels)
+library(DescTools)
+library(MASS)
+library(pander)
+library(reticulate)
+library(ggpubr)
+library(xtable)
+library(emmeans)
+library(ggpattern)
+# Needed to correctly export fonts in pdf (may not be required)
+library(extrafont)
+options(ggpattern_use_R4.1_gradients = FALSE)
+# Need to call extrafont::font_import() once in console and restart RStudio
+```
+
+
+```{r}
+data <- list.files(path = "./pref/",
+               pattern = "*.csv", 
+               full.names = T) %>% map_df(~read_csv(., col_types = cols(.default = "c")))
+data <- data[ , -which(names(data) %in% c("Additional Comments:", "Additional Comments"))]
+colnames(data)[1] <- "participantNo"
+
+data.melt <- melt(data, id.vars = c("participantNo", "Cond"))
+data.melt$value = as.numeric(data.melt$value)
+
+
+cond.fills = c("mouse,pen" = "#32c0cd", "mouse,touch" = "#32c0cd", "mouse,trackpad" = "#32c0cd", "pen,touch" = "#f6d420", "trackpad,pen" = "#914099", "trackpad,touch" = "#914099")
+
+cond.patterns = c("mouse,pen" = "#f6d420", "mouse,touch" = "#eb3e24", "mouse,trackpad" = "#914099", "pen,touch" = "#eb3e24", "trackpad,pen" = "#f6d420", "trackpad,touch" = "#eb3e24")
+
+```
+
+# Graph
+
+```{r warning=FALSE, message=FALSE}
+ggplot(data.melt, aes(x=value, y=variable, fill = Cond, pattern=Cond)) + 
+  geom_boxplot_pattern(aes(pattern_fill=Cond, pattern_fill2=Cond, fill = Cond),
+                       color = "black",
+                       pattern = "crosshatch",
+                       pattern_orientation = "vertical",
+                       pattern_density = 0.1,
+                       pattern_spacing = 0.01,
+                       pattern_alpha = 1,
+                       pattern_key_scale_factor = 0.6) +
+  scale_pattern_color_manual(values=cond.fills) +
+  scale_pattern_fill_manual(values=cond.patterns, labels=c("Trackpad, Pen", "Mouse, Pen", "Pen, Touch", "Trackpad, Touch", "Mouse, Trackpad", "Mouse, Touch")) +
+  scale_pattern_fill2_manual(values=cond.fills, labels=c("Trackpad, Pen", "Mouse, Pen", "Pen, Touch", "Trackpad, Touch", "Mouse, Trackpad", "Mouse, Touch")) +
+  scale_fill_manual(values=cond.fills)
+```
+
+# Ease of Learning
+
+```{r warning=FALSE, message=FALSE}
+b = data.melt %>% filter(variable=='learning')
+cond = b %>% spread(Cond, value)
+cond$participantNo = NULL
+cond$variable = NULL
+
+res = friedman.test(data.matrix(cond))
+pander(res)
+
+res = pairwise.wilcox.test(b$value, b$Cond, paired = TRUE, p.adj = "bonf")
+kable(res$p.value)
+
+kable(aggregate(value~Cond, b, median))
+median(b$value)
+```
+
+# Ease of Use
+
+```{r warning=FALSE, message=FALSE}
+b = data.melt %>% filter(variable=='use')
+cond = b %>% spread(Cond, value)
+cond$participantNo = NULL
+cond$variable = NULL
+
+res = friedman.test(data.matrix(cond))
+pander(res)
+
+res = pairwise.wilcox.test(b$value, b$Cond, paired = TRUE, p.adj = "bonf")
+kable(res$p.value)
+
+kable(aggregate(value~Cond, b, median))
+median(b$value)
+```
+
+# Accuracy
+
+```{r warning=FALSE, message=FALSE}
+b = data.melt %>% filter(variable=='accuracy')
+cond = b %>% spread(Cond, value)
+cond$participantNo = NULL
+cond$variable = NULL
+
+res = friedman.test(data.matrix(cond))
+pander(res)
+
+res = pairwise.wilcox.test(b$value, b$Cond, paired = TRUE, p.adj = "bonf")
+kable(res$p.value)
+
+kable(aggregate(value~Cond, b, median))
+median(b$value)
+```
+
+# Speed
+
+```{r warning=FALSE, message=FALSE}
+b = data.melt %>% filter(variable=='speed')
+cond = b %>% spread(Cond, value)
+cond$participantNo = NULL
+cond$variable = NULL
+
+res = friedman.test(data.matrix(cond))
+pander(res)
+
+res = pairwise.wilcox.test(b$value, b$Cond, paired = TRUE, p.adj = "bonf")
+kable(res$p.value)
+
+kable(aggregate(value~Cond, b, median))
+median(b$value)
+```
+
+# Eye Fatigue
+
+```{r warning=FALSE, message=FALSE}
+b = data.melt %>% filter(variable=='eye')
+cond = b %>% spread(Cond, value)
+cond$participantNo = NULL
+cond$variable = NULL
+
+res = friedman.test(data.matrix(cond))
+pander(res)
+
+res = pairwise.wilcox.test(b$value, b$Cond, paired = TRUE, p.adj = "bonf")
+kable(res$p.value)
+
+kable(aggregate(value~Cond, b, median))
+median(b$value)
+
+```
+
+# Hand Fatigue
+
+```{r warning=FALSE, message=FALSE}
+b = data.melt %>% filter(variable=='hand')
+cond = b %>% spread(Cond, value)
+cond$participantNo = NULL
+cond$variable = NULL
+
+res = friedman.test(data.matrix(cond))
+pander(res)
+
+res = pairwise.wilcox.test(b$value, b$Cond, paired = TRUE, p.adj = "bonf")
+kable(res$p.value)
+
+kable(aggregate(value~Cond, b, median))
+median(b$value)
+```

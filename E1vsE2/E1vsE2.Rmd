@@ -1,0 +1,309 @@
+---
+title: "E1 to E2"
+author: ""
+date: "April 30, 2021"
+output: 
+   html_document: 
+     dev: png
+     fig_height: 5
+     fig_width: 5.5
+     number_sections: yes
+     toc: yes
+     toc_depth: 4
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(tools)
+library(ggplot2)
+library(ARTool)
+library(reshape2)
+library(ez)
+library(apa)
+library(gridExtra)
+library(phia)
+library(viridis)
+library(lsmeans)
+library(gmodels)
+library(DescTools)
+library(MASS)
+library(pander)
+library(reticulate)
+library(ggpubr)
+library(xtable)
+library(emmeans)
+library(ggpattern)
+library(car)
+# Needed to correctly export fonts in pdf (may not be required)
+library(extrafont)
+options(ggpattern_use_R4.1_gradients = FALSE)
+# Need to call extrafont::font_import() once in console and restart RStudio
+```
+
+```{r functions, echo=FALSE, warning=FALSE}
+
+normalCheck = function(model) {
+    res = residuals(model)
+    qqnorm((res - mean(res)) / sd(res))
+    abline(0, 1)
+    print (shapiro.test(res))
+}
+
+normalize_condition <- function (column) {
+  column %>% recode_factor(
+    `pen,trackpad` = "trackpad,pen",
+    `mouse,pen` = "mouse,pen",
+    `pen,touch` = "pen,touch",
+    `trackpad,touch` = "trackpad,touch",
+    `mouse,trackpad` = "mouse,trackpad",
+    `mouse,touch` = "mouse,touch"
+  )
+}
+
+is_outlier <- function(column) {
+  col_mean = mean(column)
+  col_sd = sd(column)
+  abs(column - col_mean) > 3 * col_sd
+}
+```
+
+
+# Data Parsing
+
+## Loading Data
+
+```{r load, message=FALSE, warning=FALSE}
+# Fetch the trial data.
+data1.i <- read_csv(
+  "data.csv",
+  # I am using col_types to enforce the type of the data, and safely fail
+  # if it changes unexpectedly. It isn't really required, but still good
+  # practice.
+  col_types = cols(
+    participantNo = col_factor(),
+    task = col_factor(),
+    condition = col_factor(),
+    forCond = col_factor(),
+    mode = col_factor(),
+    block = col_factor(),
+    trialNo = col_double(),
+    missCount = col_double(),
+    dockingTime = col_double()
+  )
+) %>%
+  # Normalize the condition values.
+  mutate(condition = normalize_condition(condition),
+         forCond = normalize_condition(forCond)) 
+data1.i$methodSwitch = interaction(data1.i$mode, data1.i$condition)
+data1.i$methodSwitch = as.factor(data1.i$methodSwitch)
+
+data1.i.ms <- read_csv("data_ms.csv") %>% mutate(condition = normalize_condition(condition),
+         forCond = normalize_condition(forCond))
+
+# Fetch the trial data.
+data2.i <- read_csv(
+  "data_E2.csv",
+  # I am using col_types to enforce the type of the data, and safely fail
+  # if it changes unexpectedly. It isn't really required, but still good
+  # practice.
+  col_types = cols(
+    participantNo = col_factor(),
+    task = col_factor(),
+    condition = col_factor(),
+    forCond = col_factor(),
+    mode = col_factor(),
+    block = col_number(),
+    trialNo = col_double(),
+    missCount = col_double(),
+    dockingTime = col_double()
+  )
+) %>%
+  # Normalize the condition values.
+  mutate(condition = normalize_condition(condition),
+         forCond = normalize_condition(forCond)) 
+
+data2.i$methodSwitch = interaction(data2.i$mode, data2.i$condition)
+data2.i$methodSwitch = as.factor(data2.i$methodSwitch)
+
+data2.i.ms <- read_csv("data_ms_E2.csv") %>% mutate(condition = normalize_condition(condition),
+         forCond = normalize_condition(forCond))
+data2.i.ms$block = as.numeric(data2.i.ms$block)
+```
+
+## Outlier Culling
+
+### Switching Time Outliers
+
+```{r}
+data1 = data1.i %>% 
+  group_by(task, condition) %>%
+  filter(!is_outlier(dockingTime)) %>%
+  ungroup()
+data1$exp = "E1"
+
+data1.ms = data1.i.ms %>% group_by(task, condition) %>%
+  filter(!is_outlier(switchingTime)) %>%
+  ungroup()
+data1.ms$exp = "E1"
+
+data2 = data2.i %>% 
+  group_by(task, methodSwitch) %>%
+  filter(!is_outlier(dockingTime)) %>%
+  ungroup()
+data2$exp = "E2"
+
+data2.ms = data2.i.ms %>% group_by(task, condition) %>%
+  filter(!is_outlier(switchingTime)) %>%
+  ungroup()
+data2.ms$exp = "E2"
+```
+
+## Data Aggregation
+
+Removing Block  1 from mode switching trials - we consider these training blocks
+
+```{r}
+data1 = filter(data1, ((task == 'task' & block != 1) | task == 'baseline'))
+data1.ms = filter(data1.ms, ((task == 'task' & block != 1) | task == 'baseline'))
+data1.ms$block = as.factor(data1.ms$block)
+
+data2 = filter(data2, ((task == 'task' & block > 1) | task == 'baseline'))
+data2$block = as.factor(data2$block)
+data2.ms = filter(data2.ms, ((task == 'task' & block > 1) | task == 'baseline'))
+data2.ms$block = as.factor(data2.ms$block)
+
+```
+
+Get column names the same across E1 & E2
+```{r}
+data2 = dplyr::select(data2, -oldBlock)
+
+
+data1.ms = dplyr::select(data1.ms, -c(msTimeA, msTimeC))
+data2.ms = dplyr::select(data2.ms, -c(oldBlock, msToken, location))
+```
+
+Glue data frames together
+
+```{r}
+data.all = bind_rows(data1, data2)
+
+data.ms.all = bind_rows(data1.ms, data2.ms)
+```
+
+Aggregating the cleaned data
+
+```{r warning=FALSE, message=FALSE}
+data.group =  summarize(group_by(data.all, participantNo, task, methodSwitch, condition, mode, block, exp), meanDockTime = mean(dockingTime), meanMisses = mean(missCount))
+data.group$exp = as.factor(data.group$exp)
+
+data.ms.all$condition = as.character(data.ms.all$condition)
+data.ms.all$direction = ifelse(data.ms.all$cycleType == "A",
+                                           paste(toTitleCase(sapply(
+                                           strsplit(data.ms.all$condition, ","), "[", 1
+                                           )), "to", toTitleCase(sapply(
+                                           strsplit(data.ms.all$condition, ","), "[", 2
+                                           ))),
+                                           paste(toTitleCase(sapply(
+                                           strsplit(data.ms.all$condition, ","), "[", 2
+                                           )), "to", toTitleCase(sapply(
+                                           strsplit(data.ms.all$condition, ","), "[", 1
+                                           ))))
+data.ms.all$condition = as.factor(data.ms.all$condition)
+data.ms.all$block = as.factor(data.ms.all$block)
+data.ms.all$participantNo = as.factor(data.ms.all$participantNo)
+data.ms.all$direction = as.factor(data.ms.all$direction)
+data.ms.all$exp = as.factor(data.ms.all$exp)
+
+data.ms.dir =
+  summarize(group_by(data.ms.all, participantNo, task, condition, direction, block, exp), meanSwitchTime = mean(switchingTime), meanMSTimeB = mean(msTimeB)) %>% filter(task == 'task')
+```
+
+```{r warning=FALSE, message=FALSE}
+base = summarize(group_by(data.all, participantNo, task, condition, mode, block, exp), meanDockTime = mean(dockingTime), meanMisses = mean(missCount), meanWrong = mean(wrongModeCount), meanPos = mean(posMissCount))
+
+mouse = filter(base, mode=='mouse')
+touch = filter(base, mode=='touch')
+pen = filter(base, mode=='pen')
+trackpad = filter(base, mode=='trackpad')
+```
+
+## Mode Switching Task by Direction
+
+### ANOVAs on ART Data
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanMSTimeB ~ exp + Error(participantNo), data=filter(data.ms.dir, task == 'task'))
+anova(a)
+```
+
+### Post-Hoc Comparisons
+
+```{r warning=FALSE, message=FALSE}
+b = art.con(a, "exp") %>% summary() %>% mutate(sig = ifelse(p.value < 0.05, "*", "")) 
+b
+c = as.data.frame(b) %>% mutate(sig = ifelse(p.value < 0.05, "*", "")) 
+```
+
+### Effect Sizes
+
+```{r warning=FALSE, message=FALSE}
+m.art.anova = anova(a)
+m.art.anova$eta.sq.part = with(m.art.anova, `Sum Sq`/(`Sum Sq` + `Sum Sq.res`))
+m.art.anova
+```
+
+## Docking Time
+
+### ANOVAs on ART Data
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanDockTime ~ exp + Error(participantNo), data=data.group)
+anova(a)
+```
+
+### Post-Hoc Comparisons
+
+```{r warning=FALSE, message=FALSE}
+b = art.con(a, "exp") %>% summary() %>% mutate(sig = ifelse(p.value < 0.05, "*", "")) 
+b
+c = as.data.frame(b) %>% mutate(sig = ifelse(p.value < 0.05, "*", "")) 
+```
+
+### Effect Sizes
+
+```{r warning=FALSE, message=FALSE}
+m.art.anova = anova(a)
+m.art.anova$eta.sq.part = with(m.art.anova, `Sum Sq`/(`Sum Sq` + `Sum Sq.res`))
+m.art.anova
+```
+
+## Docking Misses
+
+### ANOVAs on ART Data
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanMisses ~ exp + Error(participantNo), data=data.group)
+anova(a)
+```
+
+### Post-Hoc Comparisons
+
+```{r warning=FALSE, message=FALSE}
+b = art.con(a, "exp") %>% summary() %>% mutate(sig = ifelse(p.value < 0.05, "*", "")) 
+b
+c = as.data.frame(b) %>% mutate(sig = ifelse(p.value < 0.05, "*", "")) 
+```
+
+### Effect Sizes
+
+```{r warning=FALSE, message=FALSE}
+m.art.anova = anova(a)
+m.art.anova$eta.sq.part = with(m.art.anova, `Sum Sq`/(`Sum Sq` + `Sum Sq.res`))
+m.art.anova
+```
