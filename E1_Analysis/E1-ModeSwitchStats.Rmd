@@ -1,0 +1,657 @@
+---
+title: "Mode Switching Stats"
+author: ""
+date: "April 30, 2021"
+output: 
+   html_document: 
+     dev: png
+     fig_height: 5
+     fig_width: 5.5
+     number_sections: yes
+     toc: yes
+     toc_depth: 4
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(tools)
+library(ggplot2)
+library(ARTool)
+library(reshape2)
+library(ez)
+library(apa)
+library(gridExtra)
+library(phia)
+library(viridis)
+library(lsmeans)
+library(gmodels)
+library(DescTools)
+library(MASS)
+library(pander)
+library(reticulate)
+library(ggpubr)
+library(xtable)
+library(emmeans)
+library(ggpattern)
+library(car)
+# Needed to correctly export fonts in pdf (may not be required)
+library(extrafont)
+options(ggpattern_use_R4.1_gradients = FALSE)
+# Need to call extrafont::font_import() once in console and restart RStudio
+```
+
+```{r functions, echo=FALSE, warning=FALSE}
+
+normalCheck = function(model) {
+    res = residuals(model)
+    qqnorm((res - mean(res)) / sd(res))
+    abline(0, 1)
+    print (shapiro.test(res))
+}
+
+normalize_condition <- function (column) {
+  column %>% recode_factor(
+    `pen,trackpad` = "trackpad,pen",
+    `mouse,pen` = "mouse,pen",
+    `pen,touch` = "pen,touch",
+    `trackpad,touch` = "trackpad,touch",
+    `mouse,trackpad` = "mouse,trackpad",
+    `mouse,touch` = "mouse,touch"
+  )
+}
+
+is_outlier <- function(column) {
+  col_mean = mean(column)
+  col_sd = sd(column)
+  abs(column - col_mean) > 3 * col_sd
+}
+```
+
+# Data Parsing
+
+## Loading Data
+
+```{r load, message=FALSE, warning=FALSE}
+# Fetch the trial data.
+data.i <- read_csv(
+  "data.csv",
+  # I am using col_types to enforce the type of the data, and safely fail
+  # if it changes unexpectedly. It isn't really required, but still good
+  # practice.
+  col_types = cols(
+    participantNo = col_factor(),
+    task = col_factor(),
+    condition = col_factor(),
+    forCond = col_factor(),
+    mode = col_factor(),
+    block = col_factor(),
+    trialNo = col_double(),
+    missCount = col_double(),
+    dockingTime = col_double()
+  )
+) %>%
+  # Normalize the condition values.
+  mutate(condition = normalize_condition(condition),
+         forCond = normalize_condition(forCond)) 
+data.i$methodSwitch = interaction(data.i$mode, data.i$condition)
+data.i$methodSwitch = as.factor(data.i$methodSwitch)
+
+data.i.ms <- read_csv("data_ms.csv") %>% mutate(condition = normalize_condition(condition),
+         forCond = normalize_condition(forCond))
+```
+
+## Subtraction Times
+
+**IMPORTANT** - you must run this block, then run the script "getMS.py" before proceeding.
+
+```{r message=FALSE, include=FALSE}
+sub_times = filter(data.i.ms, task=="baseline") %>%
+  group_by(participantNo, mode, forCond) %>%
+  summarize(mST = mean(switchingTime))
+
+sub_times$forCond[sub_times$forCond == 'pen,trackpad'] = 'trackpad,pen'
+sub_times$forCond[sub_times$forCond == 'pen,mouse'] = 'mouse,pen'
+sub_times$forCond[sub_times$forCond == 'touch,pen'] = 'pen,touch'
+sub_times$forCond[sub_times$forCond == 'touch,trackpad'] = 'trackpad,touch'
+sub_times$forCond[sub_times$forCond == 'trackpad,mouse'] = 'mouse,trackpad'
+sub_times$forCond[sub_times$forCond == 'touch,mouse'] = 'mouse,touch'
+
+write.csv(sub_times, "subTimes.csv")
+
+```
+
+## Outlier Culling
+
+50 docking time trials removed (0.8% of data)
+
+54 mode switching trials removes (1.2% of data)
+
+```{r}
+data = data.i %>% 
+  group_by(task, methodSwitch) %>%
+  filter(!is_outlier(dockingTime)) %>%
+  ungroup()
+
+data.ms = data.i.ms %>% group_by(task, condition) %>%
+  filter(!is_outlier(switchingTime)) %>%
+  ungroup()
+```
+
+
+## Data Aggregation
+
+Removing Block 1 from mode switching trials - we consider this a training block
+
+```{r}
+data = filter(data, ((task == 'task' & block != 1) | task == 'baseline'))
+data.ms = filter(data.ms, ((task == 'task' & block != 1) | task == 'baseline'))
+
+```
+
+Aggregating the cleaned data.
+
+```{r warning=FALSE, message=FALSE}
+data.group = summarize(group_by(data, participantNo, task, methodSwitch, block), meanDockTime = mean(dockingTime), meanMisses = mean(missCount), meanWrong = mean(wrongModeCount), meanPos = mean(posMissCount)) %>% filter(task == 'task')
+
+data.stats = data %>% 
+  group_by(task, methodSwitch, condition, mode) %>%
+  summarize(mDT = mean(dockingTime), cuDT = ci(dockingTime)[3], clDT = ci(dockingTime)[2], sdDT = sd(dockingTime),
+            mMC = mean(missCount), cuMC = ci(missCount)[3], clMC = ci(missCount)[2], sdMC = sd(missCount),
+            mWC = mean(wrongModeCount), cuWC = ci(wrongModeCount)[3], clWC = ci(wrongModeCount)[2], sdWC = sd(wrongModeCount),
+            mPC = mean(posMissCount), cuPC = ci(posMissCount)[3], clPC = ci(posMissCount)[2], sdPC = sd(posMissCount))
+
+data.ms$condition = as.character(data.ms$condition)
+data.ms$direction = ifelse(data.ms$cycleType == "A",
+                                           paste(toTitleCase(sapply(
+                                           strsplit(data.ms$condition, ","), "[", 1
+                                           )), "to", toTitleCase(sapply(
+                                           strsplit(data.ms$condition, ","), "[", 2
+                                           ))),
+                                           paste(toTitleCase(sapply(
+                                           strsplit(data.ms$condition, ","), "[", 2
+                                           )), "to", toTitleCase(sapply(
+                                           strsplit(data.ms$condition, ","), "[", 1
+                                           ))))
+data.ms$condition = as.factor(data.ms$condition)
+data.ms$block = as.factor(data.ms$block)
+data.ms$direction = as.factor(data.ms$direction)
+data.ms$participantNo = as.factor(data.ms$participantNo)
+
+data.ms.group = summarize(group_by(data.ms, participantNo, task, condition, block), meanSwitchTime = mean(switchingTime), meanMSTimeB = mean(msTimeB), meanSwMisses= mean(switchMissCount)) %>% filter(task == 'task')
+
+data.ms.dir =  summarize(group_by(data.ms, participantNo, task, condition, direction, block), meanSwitchTime = mean(switchingTime), meanMSTimeB = mean(msTimeB), meanSwMisses= mean(switchMissCount)) %>% filter(task == 'task')
+
+data.ms.stats = data.ms %>%  filter(task == 'task') %>%
+  group_by(task, condition) %>% 
+  summarize(mST = mean(switchingTime), cuST = ci(switchingTime)[3], clST = ci(switchingTime)[2], sdST = sd(switchingTime), mMTB = mean(msTimeB), cuMTB = ci(msTimeB)[3], clMTB = ci(msTimeB)[2], sdMTB = sd(msTimeB), mSMC= mean(switchMissCount), cuSMC=ci(switchMissCount)[3], clSMC=ci(switchMissCount)[2])
+
+
+data.ms.stats.block = data.ms %>% filter(task == 'task') %>%
+  group_by(task, condition, block) %>% 
+  summarize(mST = mean(switchingTime), cuST = ci(switchingTime)[3], clST = ci(switchingTime)[2], sdST = sd(switchingTime), mMTB = mean(msTimeB), cuMTB = ci(msTimeB)[3], clMTB = ci(msTimeB)[2], sdMTB = sd(msTimeB))
+
+data.ms.stats.direction = data.ms %>%  filter(task == 'task') %>%
+  group_by(task, condition, direction) %>% 
+  summarize(mST = mean(switchingTime), cuST = ci(switchingTime)[3], clST = ci(switchingTime)[2], sdST = sd(switchingTime), mMTB = mean(msTimeB), cuMTB = ci(msTimeB)[3], clMTB = ci(msTimeB)[2], sdMTB = sd(msTimeB), mSMC= mean(switchMissCount), cuSMC=ci(switchMissCount)[3], clSMC=ci(switchMissCount)[2]) 
+
+lvls = c("Pen to Touch", "Touch to Pen", "Pen to Mouse", "Mouse to Pen", "Mouse to Touch", "Touch to Mouse", "Trackpad to Mouse", "Mouse to Trackpad", "Pen to Trackpad", "Trackpad to Pen", "Trackpad to Touch", "Touch to Trackpad")
+data.ms.stats.direction$direction = factor(data.ms.stats.direction$direction, levels=lvls)
+
+```
+
+```{r warning=FALSE, message=FALSE}
+base = summarize(group_by(data, participantNo, task, condition, mode, block), meanDockTime = mean(dockingTime), meanMisses = mean(missCount), meanWrong = mean(wrongModeCount), meanPos = mean(posMissCount))
+
+mouse = filter(base, mode=='mouse')
+touch = filter(base, mode=='touch')
+pen = filter(base, mode=='pen')
+trackpad = filter(base, mode=='trackpad')
+```
+
+# Docking Time 
+
+## Mode Switching Task
+
+### Chart 
+
+```{r}
+kable(dplyr::select(filter(data.stats, task == 'task'), task, methodSwitch, mDT, sdDT))
+```
+
+### Graph
+
+```{r  }
+ggplot(data=filter(data.stats, task == 'task'), aes(x=methodSwitch, y=mDT, fill=methodSwitch)) +
+  geom_bar(stat="identity") +
+  geom_errorbar(aes(ymin = clDT, ymax = cuDT), width = 0.2, size = .5, position = position_dodge(.7)) +
+  geom_text(aes(label=round(mDT,digits=1)), size = 3, position = position_dodge(0.7), vjust = 3.2) +
+  scale_x_discrete(name="Condition") +
+  scale_y_continuous(name="Docking Time (ms)") +
+  theme(axis.text.x = element_text(angle = 40, vjust = 1, hjust=1),
+        legend.position = 'bottom')
+```
+
+Docking time was fastest when switching between touch and pen, and slowest when switching between trackpad and mouse.
+
+## Baseline Task
+
+### Chart 
+
+```{r  }
+kable(dplyr::select(filter(data.stats, task == 'baseline'), task, condition, mDT, sdDT))
+```
+
+### Graph
+
+```{r  }
+ggplot(data=filter(data.stats, task == 'baseline'), aes(x=condition, y=mDT, fill=condition)) +
+  geom_bar(stat="identity") +
+  geom_errorbar(aes(ymin = clDT, ymax = cuDT), width = 0.2, size = .5, position = position_dodge(.7)) +
+  geom_text(aes(label=round(mDT,digits=1)), size = 3, position = position_dodge(0.7), vjust = 3.2) +
+  scale_x_discrete(name="Condition") +
+  scale_y_continuous(name="Docking Time (ms)") +
+  theme(axis.text.x = element_text(angle = 40, vjust = 1, hjust=1),
+        legend.position = 'bottom')
+```
+
+## Effect of Condition
+
+### Normality Check
+
+```{r}
+m <- aov(meanDockTime ~ methodSwitch*block, data=data.group)
+pander(normalCheck(m))
+```
+
+Not normally distributed, need to do transform.
+
+### Box-Cox Transformation
+
+```{r}
+boxcox(meanDockTime ~ methodSwitch*block, data=data.group, plotit=T)
+```
+
+An effective lambda value is -0.3?
+
+```{r}
+datatr = data.group %>%
+    mutate(meanDockTime = meanDockTime^(-0.45))
+
+m <- aov(meanDockTime ~ methodSwitch*block, data=datatr)
+pander(normalCheck(m))
+```
+
+Nah, it's not working - try the ART instead.
+
+### ANOVAs & Post-hoc comparisons on ART Data
+
+#### Mouse
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanDockTime ~ condition*block + Error(participantNo), data=mouse)
+anova(a)
+```
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanDockTime ~ condition + Error(participantNo), data=mouse)
+art.con(a, "condition") %>% summary() %>% mutate(sig = ifelse(p.value < 0.05, "*", ""))
+```
+
+#### Touch
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanDockTime ~ condition*block + Error(participantNo), data=touch)
+anova(a)
+```
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanDockTime ~ condition + Error(participantNo), data=touch)
+art.con(a, "condition") %>% summary() %>% mutate(sig = ifelse(p.value < 0.05, "*", ""))
+```
+
+#### Pen
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanDockTime ~ condition*block + Error(participantNo), data=pen)
+anova(a)
+```
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanDockTime ~ condition + Error(participantNo), data=pen)
+art.con(a, "condition") %>% summary() %>% mutate(sig = ifelse(p.value < 0.05, "*", ""))
+```
+
+#### Trackpad
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanDockTime ~ condition*block + Error(participantNo), data=trackpad)
+anova(a)
+```
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanDockTime ~ condition + Error(participantNo), data=trackpad)
+art.con(a, "condition") %>% summary() %>% mutate(sig = ifelse(p.value < 0.05, "*", ""))
+```
+
+# Miss Count
+
+## Mode Switching Task
+
+### Chart
+
+```{r  }
+kable(dplyr::select(filter(data.stats, task == 'task'), task, condition, mMC, sdMC))
+```
+
+### Graph
+
+```{r  }
+ggplot(data=filter(data.stats, task == 'task'), aes(x=condition, y=mMC, fill=condition)) +
+  geom_bar(stat="identity") +
+  geom_text(aes(label=round(mMC,digits=2)), size = 3, position = position_dodge(0.7), vjust = 3.2) +
+  scale_x_discrete(name="Condition") +
+  scale_y_continuous(name="Mean Miss Count") +
+  theme(axis.text.x = element_text(angle = 40, vjust = 1, hjust=1),
+        legend.position = 'bottom')
+```
+
+### Percentages
+
+```{r}
+mean(data$missCount)
+sd(data$missCount)
+
+sum(data$wrongModeCount) / sum(data$missCount) * 100
+sum(data$posMissCount) / sum(data$missCount) * 100
+```
+
+## Baseline Task
+
+### Chart
+
+```{r  }
+kable(dplyr::select(filter(data.stats, task == 'baseline'), task, condition, mMC, sdMC))
+```
+
+### Graph
+
+```{r  }
+ggplot(data=filter(data.stats, task == 'baseline'), aes(x=condition, y=mMC, fill=condition)) +
+  geom_bar(stat="identity") +
+  geom_text(aes(label=round(mMC,digits=2)), size = 3, position = position_dodge(0.7), vjust = 3.2) +
+  scale_x_discrete(name="Condition") +
+  scale_y_continuous(name="Mean Miss Count") +
+  theme(axis.text.x = element_text(angle = 40, vjust = 1, hjust=1),
+        legend.position = 'bottom')
+```
+
+## Effect of Condition 
+
+### Normality Check
+
+```{r}
+# m <- aov(meanMisses ~ condition*block, data=data.group)
+# pander(normalCheck(m))
+```
+
+Not normally distributed, need to do transform?
+
+### Box-Cox Transformation
+
+```{r}
+#boxcox(meanMisses ~ task*condition*block, data=data.long, plotit=T)
+```
+
+Not all values are positive - cannot do Box-Cox transform. Run ART instead
+
+```{r}
+# datatr = data.long %>%
+#     mutate(meanDockTime = meanDockTime^(-0.2))
+# 
+# m <- aov(meanDockTime ~ task*condition, data=datatr)
+# pander(normalCheck(m))
+```
+
+### ANOVAs on ART Data
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanMisses ~ methodSwitch*block + Error(participantNo), data=data.group)
+anova(a)
+```
+
+### Post-Hoc Comparisons
+
+```{r warning=FALSE, message=FALSE}
+art.con(a, "methodSwitch") %>% summary() %>% mutate(sig = ifelse(p.value < 0.05, "*", ""))
+```
+
+### ANOVAs & Post-hoc comparisons on ART Data by Device
+
+#### Mouse
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanMisses ~ condition*block + Error(participantNo), data=mouse)
+anova(a)
+```
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanMisses ~ condition + Error(participantNo), data=mouse)
+art.con(a, "condition") %>% summary() %>% mutate(sig = ifelse(p.value < 0.05, "*", ""))
+```
+
+#### Touch
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanMisses ~ condition*block + Error(participantNo), data=touch)
+anova(a)
+```
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanMisses ~ condition + Error(participantNo), data=touch)
+art.con(a, "condition") %>% summary() %>% mutate(sig = ifelse(p.value < 0.05, "*", ""))
+```
+
+#### Pen
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanMisses ~ condition*block + Error(participantNo), data=pen)
+anova(a)
+```
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanMisses ~ condition + Error(participantNo), data=pen)
+art.con(a, "condition") %>% summary() %>% mutate(sig = ifelse(p.value < 0.05, "*", ""))
+```
+
+#### Trackpad
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanMisses ~ condition*block + Error(participantNo), data=trackpad)
+anova(a)
+```
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanMisses ~ condition + Error(participantNo), data=trackpad)
+art.con(a, "condition") %>% summary() %>% mutate(sig = ifelse(p.value < 0.05, "*", ""))
+```
+
+# Switching Miss Count
+
+```{r}
+noBaseline = filter(data.ms, data.ms$task != "baseline")
+sum(noBaseline$switchMissCount > 0)
+sum(noBaseline$wrongModeCount > 0)
+
+info <- noBaseline[noBaseline$switchMissCount > 0,] %>% group_by(direction) %>% summarize(count=n()) 
+kable(info)
+```
+<!-- # Switching Point -->
+
+<!-- ## Mode Switching Task -->
+
+<!-- ### Chart -->
+
+<!-- ```{r  } -->
+<!-- kable(dplyr::select(filter(data.ms.stats, task == 'task'), task, condition, mST, sdST)) -->
+<!-- ``` -->
+
+<!-- ### Graph -->
+
+<!-- ```{r  } -->
+<!-- ggplot(data=filter(data.ms.stats, task == 'task'), aes(x=condition, y=mST, fill=condition)) + -->
+<!--   geom_bar(stat="identity") + -->
+<!--   geom_errorbar(aes(ymin = clST, ymax = cuST), width = 0.2, size = .5, position = position_dodge(.7)) + -->
+<!--   geom_text(aes(label=round(mST,digits=1)), size = 3, position = position_dodge(0.7), vjust = 3.2) + -->
+<!--   scale_x_discrete(name="Condition") + -->
+<!--   scale_y_continuous(name="Switching Point (ms)") + -->
+<!--   theme(axis.text.x = element_text(angle = 40, vjust = 1, hjust=1), -->
+<!--         legend.position = 'bottom') -->
+<!-- ``` -->
+
+<!-- ## Effect of Task & Mode Switching Devices  -->
+
+<!-- ### Normality Check -->
+
+<!-- ```{r} -->
+<!-- m <- aov(meanSwitchTime ~ condition*block, data=data.ms.group) -->
+<!-- pander(normalCheck(m)) -->
+<!-- ``` -->
+
+<!-- Data is not normally distributed. -->
+
+<!-- ### Box-Cox Transformation -->
+
+<!-- ```{r} -->
+<!-- boxcox(meanSwitchTime ~ condition*block, data=data.ms.group, plotit=T) -->
+<!-- ``` -->
+
+<!-- An effective lambda value is 0? -->
+
+<!-- ```{r} -->
+<!-- datatr = data.ms.group %>% -->
+<!--     mutate(meanSwitchTime = log(meanSwitchTime)) -->
+
+<!-- m <- aov(meanSwitchTime ~ condition*block, data=datatr) -->
+<!-- pander(normalCheck(m)) -->
+<!-- ``` -->
+
+<!-- ### ANOVAs on ART Data -->
+
+<!-- ```{r warning=FALSE, message=FALSE} -->
+<!-- a = art(meanSwitchTime ~ condition*block + (1|participantNo), data=data.ms.group) -->
+<!-- anova(a) -->
+<!-- ``` -->
+
+<!-- ## Mode Switching Task by Direction -->
+
+<!-- ### Chart -->
+
+<!-- ```{r message=FALSE} -->
+<!-- kable(dplyr::select(filter(data.ms.stats.direction, task == 'task'), direction, mST, sdST)) -->
+<!-- ``` -->
+
+<!-- ### Graph -->
+
+<!-- ```{r  } -->
+<!-- ggplot(data=filter(data.ms.stats.direction, task == 'task'), aes(x=direction, y=mST, fill=direction)) + -->
+<!--   geom_bar(stat="identity") + -->
+<!--   geom_errorbar(aes(ymin = clST, ymax = cuST), width = 0.2, size = .5, position = position_dodge(.7)) + -->
+<!--   geom_text(aes(label=round(mST,digits=1)), size = 3, position = position_dodge(0.7), vjust = 3.2) + -->
+<!--   scale_x_discrete(name="Condition") + -->
+<!--   scale_y_continuous(name="Switching Point (ms)") + -->
+<!--   theme(axis.text.x = element_text(angle = 40, vjust = 1, hjust=1), -->
+<!--         legend.position = 'bottom') -->
+<!-- ``` -->
+
+# Mode Switching Time 
+
+## Mode Switching Task
+
+### Chart
+
+```{r  }
+kable(dplyr::select(filter(data.ms.stats, task == 'task'), task, condition, mMTB, sdMTB))
+```
+
+### Graph
+
+```{r}
+ggplot(data=filter(data.ms.stats, task == 'task'), aes(x=condition, y=mMTB, fill=condition)) +
+  geom_bar(stat="identity") +
+  geom_errorbar(aes(ymin = clMTB, ymax = cuMTB), width = 0.2, size = .5, position = position_dodge(.7)) +
+  geom_text(aes(label=round(mMTB,digits=1)), size = 3, position = position_dodge(0.7), vjust = 3.5) +
+  scale_x_discrete(name="Condition") +
+  scale_y_continuous(name="Switching Time (ms)") +
+  theme(axis.text.x = element_text(angle = 40, vjust = 1, hjust=1),
+        legend.position = 'bottom')
+```
+
+<!-- ## Effect of Task & Mode Switching Devices  -->
+
+<!-- ### Normality Check -->
+
+<!-- ```{r} -->
+<!-- m <- aov(meanMSTimeB ~ condition*block, data=filter(data.ms.group, task == 'task')) -->
+<!-- pander(normalCheck(m)) -->
+<!-- ``` -->
+
+<!-- Data is not normal. Cannot run Box-Cox with negative values. -->
+
+<!-- ### ANOVAs on ART Data -->
+
+<!-- ```{r warning=FALSE, message=FALSE} -->
+<!-- a = art(meanMSTimeB ~ condition*block + (1|participantNo), data=data.ms.group) -->
+<!-- anova(a) -->
+<!-- ``` -->
+
+
+## Mode Switching Task by Direction
+
+### Chart
+
+```{r message=FALSE}
+kable(dplyr::select(filter(data.ms.stats.direction, task == 'task'), direction, mMTB, sdMTB))
+```
+
+### Graph
+
+```{r  }
+ggplot(data=filter(data.ms.stats.direction, task == 'task'), aes(x=direction, y=mMTB, fill=direction)) +
+  geom_bar(stat="identity") +
+  geom_errorbar(aes(ymin = clMTB, ymax = cuMTB), width = 0.2, size = .5, position = position_dodge(.7)) +
+  geom_text(aes(label=round(mMTB,digits=1)), size = 3, position = position_dodge(0.7), vjust = 3.2) +
+  scale_x_discrete(name="Condition") +
+  scale_y_continuous(name="Mode Switching Time (ms)") +
+  theme(axis.text.x = element_text(angle = 40, vjust = 1, hjust=1),
+        legend.position = 'bottom')
+```
+
+## Effect of Condition
+
+### Normality Check
+
+```{r}
+m <- aov(meanMSTimeB ~ direction, data=filter(data.ms.dir, task == 'task'))
+pander(normalCheck(m))
+```
+
+Data is not normal. Can't run Box-Cox due to negative mode switching times.
+
+### ANOVAs on ART Data
+
+```{r warning=FALSE, message=FALSE}
+a = art(meanMSTimeB ~ direction*block + Error(participantNo), data=filter(data.ms.dir, task == 'task'))
+anova(a)
+```
+
+### Post-Hoc Comparisons
+
+```{r warning=FALSE, message=FALSE}
+b <- art.con(a, "direction")
+b %>% summary() %>% mutate(sig = ifelse(p.value < 0.05, "*", "")) 
+c = as.data.frame(b) %>% mutate(sig = ifelse(p.value < 0.05, "*", "")) 
+```
